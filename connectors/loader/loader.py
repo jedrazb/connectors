@@ -1,4 +1,5 @@
 import asyncio
+import nest_asyncio
 from typing import AsyncIterator, Iterator
 
 from langchain_core.document_loaders import BaseLoader
@@ -10,6 +11,10 @@ from connectors.sources.google_drive import GoogleDriveDataSource
 
 from connectors.source import DataSourceConfiguration
 from connectors.es.settings import TIMESTAMP_FIELD
+
+
+# Apply nest_asyncio to allow nested event loops in jupter notebooks
+nest_asyncio.apply()
 
 
 # wrapper class to handle limit of docs to fetc, sync rules, etc
