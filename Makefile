@@ -27,12 +27,18 @@ bin/elastic-ingest: bin/python
 bin/black: bin/python
 	bin/pip install -r requirements/$(ARCH).txt
 	bin/pip install -r requirements/tests.txt
-	
+
 
 bin/pytest: bin/python
 	bin/pip install -r requirements/$(ARCH).txt
 	bin/pip install -r requirements/tests.txt
 	bin/pip install -r requirements/ftest.txt
+
+bin/loader: bin/python
+	bin/pip install -r requirements/$(ARCH).txt
+	bin/pip install -r requirements/loader.txt
+
+loader: bin/python bin/loader
 
 clean:
 	rm -rf bin lib include
