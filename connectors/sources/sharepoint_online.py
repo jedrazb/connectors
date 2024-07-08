@@ -72,7 +72,7 @@ DEFAULT_BACKOFF_MULTIPLIER = 5
 FILE_WRITE_CHUNK_SIZE = 1024 * 64  # 64KB default SSD page size
 MAX_DOCUMENT_SIZE = 10485760
 WILDCARD = "*"
-DRIVE_ITEMS_FIELDS = "id,content.downloadUrl,lastModifiedDateTime,lastModifiedBy,root,deleted,file,folder,package,name,webUrl,createdBy,createdDateTime,size,parentReference"
+DRIVE_ITEMS_FIELDS = "id,content.downloadUrl,lastModifiedDateTime,lastModifiedBy,root,deleted,file,folder,package,name,webUrl,createdBy,createdDateTime,size,parentReference,file"
 
 CURSOR_SITE_DRIVE_KEY = "site_drives"
 
@@ -1624,7 +1624,9 @@ class SharepointOnlineDataSource(BaseDataSource):
                         for drive_items_batch in iterable_batches_generator(
                             page.items, SPO_API_MAX_BATCH_SIZE
                         ):
-                            async for drive_item in self._drive_items_batch_with_permissions(
+                            async for (
+                                drive_item
+                            ) in self._drive_items_batch_with_permissions(
                                 site_drive["id"], drive_items_batch, site["webUrl"]
                             ):
                                 drive_item["_id"] = drive_item["id"]
@@ -1725,7 +1727,9 @@ class SharepointOnlineDataSource(BaseDataSource):
                         for drive_items_batch in iterable_batches_generator(
                             page.items, SPO_API_MAX_BATCH_SIZE
                         ):
-                            async for drive_item in self._drive_items_batch_with_permissions(
+                            async for (
+                                drive_item
+                            ) in self._drive_items_batch_with_permissions(
                                 site_drive["id"], drive_items_batch, site["webUrl"]
                             ):
                                 drive_item["_id"] = drive_item["id"]
@@ -1988,7 +1992,9 @@ class SharepointOnlineDataSource(BaseDataSource):
 
                         list_item_access_control = []
 
-                        async for role_assignment in self.client.site_list_item_role_assignments(
+                        async for (
+                            role_assignment
+                        ) in self.client.site_list_item_role_assignments(
                             site_web_url, site_list_name, list_item_natural_id
                         ):
                             list_item_access_control.extend(
@@ -2007,7 +2013,9 @@ class SharepointOnlineDataSource(BaseDataSource):
                     )
 
                 if "Attachments" in list_item["fields"]:
-                    async for list_item_attachment in self.client.site_list_item_attachments(
+                    async for (
+                        list_item_attachment
+                    ) in self.client.site_list_item_attachments(
                         site_web_url, site_list_name, list_item_natural_id
                     ):
                         list_item_attachment["_id"] = list_item_attachment["odata.id"]
@@ -2015,17 +2023,17 @@ class SharepointOnlineDataSource(BaseDataSource):
                         list_item_attachment["_timestamp"] = list_item[
                             "lastModifiedDateTime"
                         ]
-                        list_item_attachment[
-                            "_original_filename"
-                        ] = list_item_attachment.get("FileName", "")
+                        list_item_attachment["_original_filename"] = (
+                            list_item_attachment.get("FileName", "")
+                        )
                         if (
                             "ServerRelativePath" in list_item_attachment
                             and "DecodedUrl"
                             in list_item_attachment.get("ServerRelativePath", {})
                         ):
-                            list_item_attachment[
-                                "webUrl"
-                            ] = f"https://{site_collection}{list_item_attachment['ServerRelativePath']['DecodedUrl']}"
+                            list_item_attachment["webUrl"] = (
+                                f"https://{site_collection}{list_item_attachment['ServerRelativePath']['DecodedUrl']}"
+                            )
                         else:
                             self._logger.debug(
                                 f"Unable to populate webUrl for list item attachment {list_item_attachment['_id']}"
@@ -2073,7 +2081,9 @@ class SharepointOnlineDataSource(BaseDataSource):
 
                         site_list_access_control = []
 
-                        async for role_assignment in self.client.site_list_role_assignments(
+                        async for (
+                            role_assignment
+                        ) in self.client.site_list_role_assignments(
                             site_url, site_list_name
                         ):
                             site_list_access_control.extend(
@@ -2195,7 +2205,9 @@ class SharepointOnlineDataSource(BaseDataSource):
 
                         page_access_control = []
 
-                        async for role_assignment in self.client.site_page_role_assignments(
+                        async for (
+                            role_assignment
+                        ) in self.client.site_page_role_assignments(
                             url, site_page["Id"]
                         ):
                             page_access_control.extend(

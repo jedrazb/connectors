@@ -20,9 +20,11 @@ nest_asyncio.apply()
 # wrapper class to handle limit of docs to fetc, sync rules, etc
 class ConnectorDataSourceLoader(BaseLoader):
 
-    def __init__(self, cls, **kwargs) -> None:
+    def __init__(self, cls, content_keys, limit=None, **kwargs) -> None:
 
         connector_config = cls.get_default_configuration()
+        self.content_keys = content_keys
+        self.limit = limit
 
         # Apply user config
         for key, value in kwargs.items():
@@ -60,7 +62,10 @@ class ConnectorDataSourceLoader(BaseLoader):
             # TODO: not all sources have timestamp field and support downloads
             # data = await lazy_download(doit=True, timestamp=doc[TIMESTAMP_FIELD])
             # doc.update(data)
-            yield doc
+            yield Document(
+                page_content=" ".join([doc.get(key, "") for key in self.content_keys]),
+                metadata=doc,
+            )
 
 
 class SharepointOnlineLoader(ConnectorDataSourceLoader):
