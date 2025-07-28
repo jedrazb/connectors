@@ -107,6 +107,7 @@ def _default_config():
             "azure_blob_storage": "connectors.sources.azure_blob_storage:AzureBlobStorageDataSource",
             "box": "connectors.sources.box:BoxDataSource",
             "confluence": "connectors.sources.confluence:ConfluenceDataSource",
+            "crawl4ai": "connectors.sources.crawl4ai:Crawl4AIWebDataSource",
             "dir": "connectors.sources.directory:DirectoryDataSource",
             "dropbox": "connectors.sources.dropbox:DropboxDataSource",
             "github": "connectors.sources.github:GitHubDataSource",
