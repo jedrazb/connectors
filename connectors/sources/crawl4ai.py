@@ -10,12 +10,11 @@ Crawl4AI Web Crawler Data Source
 import fnmatch
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from functools import cached_property
-from typing import Dict, List, Set
+from typing import List
 from urllib.parse import urlparse
 
 import aiohttp
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, HTTPCrawlerConfig
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 from crawl4ai.deep_crawling.filters import (
     FilterChain,
@@ -36,42 +35,76 @@ class Crawl4AIWebDataSource(BaseDataSource):
 
     def __init__(self, configuration):
         super().__init__(configuration=configuration)
+        self.start_urls = self.configuration.get("start_urls", [])
+        self.allowed_domains = self.configuration.get("allowed_domains", [])
+        self.sitemap_urls = self.configuration.get("sitemap_urls", [])
+        self.url_include_patterns = self.configuration.get("url_include_patterns", [])
+        self.url_exclude_patterns = self.configuration.get("url_exclude_patterns", [])
+        self.max_crawl_depth = self.configuration["max_crawl_depth"]
+        self.extract_full_content = self.configuration["extract_full_content"]
+        self.extract_binary_content = self.configuration["extract_binary_content"]
+        self.binary_file_extensions = self.configuration.get(
+            "binary_file_extensions", []
+        )
 
-    @cached_property
-    def allowed_domains_set(self) -> Set[str]:
-        """Get allowed domains as a set, auto-extracting from start URLs if empty"""
-        domains = set()
-
-        allowed_domains = self.configuration.get("allowed_domains", [])
-        if allowed_domains:
-            domains.update(
-                domain.strip().lower() for domain in allowed_domains if domain.strip()
+        # If allowed_domains is empty, extract domains from start_urls
+        if not self.allowed_domains and self.start_urls:
+            self.allowed_domains = self._extract_domains_from_urls(self.start_urls)
+            self._logger.info(
+                f"Extracted allowed domains from start URLs: {self.allowed_domains}"
             )
 
-        if not domains:
-            start_urls = self.configuration.get("start_urls", [])
-            for url in start_urls:
-                if url and url.strip():
-                    try:
-                        parsed = urlparse(url.strip())
-                        if parsed.netloc:
-                            domains.add(parsed.netloc.lower())
-                    except Exception:
-                        continue
+    def _extract_domains_from_urls(self, urls: List[str]) -> List[str]:
+        """Extract unique domains from a list of URLs"""
+        domains = set()
+        for url in urls:
+            try:
+                parsed = urlparse(url)
+                if parsed.netloc:
+                    domains.add(parsed.netloc)
+            except Exception as e:
+                self._logger.warning(f"Failed to parse URL {url}: {e}")
+        return list(domains)
 
-        return domains
+    def _normalize_url(self, url: str) -> str:
+        """Normalize URL by removing fragment identifiers to prevent duplicate crawling"""
+        parsed = urlparse(url)
+        return parsed._replace(fragment="").geturl()
 
-    @cached_property
-    def binary_extensions_set(self) -> Set[str]:
-        """Get binary file extensions as a set"""
-        extensions = self.configuration.get("binary_file_extensions", [])
-        if not extensions:
-            return set()
+    def _should_include_url(self, url: str) -> bool:
+        """Check if URL should be included based on include/exclude patterns"""
+        # Check include patterns
+        if self.url_include_patterns:
+            included = any(
+                fnmatch.fnmatch(url, pattern) for pattern in self.url_include_patterns
+            )
+            if not included:
+                return False
 
-        if isinstance(extensions, str):
-            extensions = [ext.strip() for ext in extensions.split(",")]
+        # Check exclude patterns
+        if self.url_exclude_patterns:
+            excluded = any(
+                fnmatch.fnmatch(url, pattern) for pattern in self.url_exclude_patterns
+            )
+            if excluded:
+                return False
 
-        return {ext.strip().lower().lstrip(".") for ext in extensions if ext.strip()}
+        return True
+
+    def _is_binary_file(self, url: str) -> bool:
+        """Check if URL points to a binary file based on extension"""
+        if not self.extract_binary_content:
+            return False
+
+        if not self.binary_file_extensions:
+            return False
+
+        parsed_url = urlparse(url)
+        path = parsed_url.path.lower()
+
+        return any(
+            path.endswith(f".{ext.lower()}") for ext in self.binary_file_extensions
+        )
 
     @classmethod
     def get_default_configuration(cls):
@@ -88,7 +121,7 @@ class Crawl4AIWebDataSource(BaseDataSource):
                 "display": "textarea",
                 "label": "Allowed domains",
                 "order": 2,
-                "tooltip": "Comma-separated list of domains to restrict crawling to. Leave empty to allow all domains from seed URLs. Example: example.com, docs.example.com",
+                "tooltip": "Comma-separated list of domains to restrict crawling to. Leave empty to allow all domains from seed URLs.",
                 "type": "list",
                 "value": "",
                 "required": False,
@@ -106,7 +139,7 @@ class Crawl4AIWebDataSource(BaseDataSource):
                 "display": "textarea",
                 "label": "URL patterns to include",
                 "order": 4,
-                "tooltip": "Comma-separated glob patterns for URLs to include. Use '*' to match any characters. Example: https://example.com/docs/*, *.pdf",
+                "tooltip": "Comma-separated glob patterns for URLs to include. Use '*' to match any characters.",
                 "type": "list",
                 "value": "*",
             },
@@ -114,7 +147,7 @@ class Crawl4AIWebDataSource(BaseDataSource):
                 "display": "textarea",
                 "label": "URL patterns to exclude",
                 "order": 5,
-                "tooltip": "Comma-separated glob patterns for URLs to exclude. Example: */admin/*, */login/*, *.zip",
+                "tooltip": "Comma-separated glob patterns for URLs to exclude.",
                 "type": "list",
                 "value": "*/admin/*, */login/*",
                 "required": False,
@@ -123,7 +156,7 @@ class Crawl4AIWebDataSource(BaseDataSource):
                 "display": "numeric",
                 "label": "Maximum crawl depth",
                 "order": 6,
-                "tooltip": "Maximum number of link levels to follow from seed URLs. 0 = seed URLs only, 1 = seed URLs + direct links, etc.",
+                "tooltip": "Maximum number of link levels to follow from seed URLs.",
                 "type": "int",
                 "value": 2,
             },
@@ -147,7 +180,7 @@ class Crawl4AIWebDataSource(BaseDataSource):
                 "display": "textarea",
                 "label": "Binary file extensions to extract",
                 "order": 9,
-                "tooltip": "Comma-separated list of binary file extensions to extract content from. Example: pdf, docx, pptx, xlsx",
+                "tooltip": "Comma-separated list of binary file extensions to extract content from.",
                 "type": "list",
                 "value": "pdf, docx, pptx, xlsx, doc, xls, ppt",
                 "required": False,
@@ -158,12 +191,6 @@ class Crawl4AIWebDataSource(BaseDataSource):
     async def ping(self):
         """Test connectivity by checking if start URLs are accessible"""
         try:
-            extract_binary = self.configuration.get("extract_binary_content", False)
-            if extract_binary and not self.binary_extensions_set:
-                self._logger.warning(
-                    "Binary content extraction is enabled but no binary file extensions are configured"
-                )
-
             start_urls = self.configuration.get("start_urls", [])
             if not start_urls:
                 return False
@@ -183,308 +210,232 @@ class Crawl4AIWebDataSource(BaseDataSource):
             self._logger.error(f"Ping failed: {e}")
             return False
 
-    async def changed(self):
-        """Always return True as web content can change frequently"""
-        return True
-
-    def _is_binary_file(self, url: str) -> bool:
-        """Check if URL points to a binary file that we can extract content from"""
-        if not self.configuration.get("extract_binary_content", False):
-            return False
-
-        extensions = self.binary_extensions_set
-        if not extensions:
-            return False
-
-        try:
-            path = urlparse(url).path.lower()
-            if "." in path:
-                extension = path.split(".")[-1]
-                return extension in extensions
-        except Exception:
-            return False
-
-        return False
-
-    def _create_filter_chain(self) -> FilterChain:
-        """Create filter chain for URL filtering using crawl4ai built-ins"""
-        filters = []
-
-        allowed_domains = list(self.allowed_domains_set)
-        if allowed_domains:
-            domain_filter = DomainFilter(allowed_domains=allowed_domains)
-            filters.append(domain_filter)
-            self._logger.info(f"Added domain filter for: {allowed_domains}")
-
-        include_patterns = self.configuration.get("url_include_patterns", [])
-        exclude_patterns = self.configuration.get("url_exclude_patterns", [])
-
-        if include_patterns:
-            url_filter = URLPatternFilter(patterns=include_patterns)
-            filters.append(url_filter)
-            self._logger.info(f"Added include patterns: {include_patterns}")
-
-        if exclude_patterns:
-            url_filter = URLPatternFilter(patterns=exclude_patterns, reverse=True)
-            filters.append(url_filter)
-            self._logger.info(f"Added exclude patterns: {exclude_patterns}")
-
-        filter_chain = FilterChain(filters) if filters else None
-        self._logger.info(f"Created filter chain with {len(filters)} filters")
-        return filter_chain
-
-    async def _parse_sitemap(self, sitemap_url: str) -> List[str]:
-        """Parse XML sitemap and extract URLs, applying include pattern filtering"""
+    async def _parse_sitemap_xml(self, sitemap_url: str) -> List[str]:
+        """Parse XML sitemap and extract URLs using proper XML parsing"""
         urls = []
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(sitemap_url) as response:
+                async with session.get(
+                    sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
                     if response.status == 200:
                         content = await response.text()
-                        root = ET.fromstring(content)
+                        self._logger.debug(f"Sitemap content length: {len(content)}")
 
-                        namespaces = {
-                            "sitemap": "http://www.sitemaps.org/schemas/sitemap/0.9"
-                        }
+                        # Try to parse as XML
+                        try:
+                            root = ET.fromstring(content)
 
-                        for url_elem in root.findall(
-                            ".//sitemap:url/sitemap:loc", namespaces
-                        ):
-                            if url_elem.text:
-                                urls.append(url_elem.text.strip())
+                            # Handle both sitemap index and URL sitemaps
+                            namespaces = {
+                                "sitemap": "http://www.sitemaps.org/schemas/sitemap/0.9"
+                            }
 
-                        if not urls:
-                            for url_elem in root.findall(".//loc"):
+                            # Look for URL entries
+                            for url_elem in root.findall(
+                                ".//sitemap:url/sitemap:loc", namespaces
+                            ):
                                 if url_elem.text:
-                                    urls.append(url_elem.text.strip())
+                                    url = url_elem.text.strip()
+                                    if self._should_include_url(url):
+                                        urls.append(url)
+
+                            # If no URLs found with namespace, try without
+                            if not urls:
+                                for url_elem in root.findall(".//url/loc"):
+                                    if url_elem.text:
+                                        url = url_elem.text.strip()
+                                        if self._should_include_url(url):
+                                            urls.append(url)
+
+                            # Also try direct loc elements
+                            if not urls:
+                                for url_elem in root.findall(".//loc"):
+                                    if url_elem.text:
+                                        url = url_elem.text.strip()
+                                        if self._should_include_url(url):
+                                            urls.append(url)
+
+                        except ET.ParseError as e:
+                            self._logger.warning(
+                                f"Failed to parse XML for {sitemap_url}: {e}"
+                            )
+                            # Fallback to text-based extraction
+                            lines = content.split("\n")
+                            for line in lines:
+                                line = line.strip()
+                                if line.startswith("http://") or line.startswith(
+                                    "https://"
+                                ):
+                                    url = self._normalize_url(line)
+                                    if self._should_include_url(url):
+                                        urls.append(url)
+                    else:
+                        self._logger.warning(
+                            f"Sitemap {sitemap_url} returned status {response.status}"
+                        )
 
         except Exception as e:
             self._logger.error(f"Error parsing sitemap {sitemap_url}: {e}")
 
-        # Filter sitemap URLs based on include patterns
-        include_patterns = self.configuration.get("url_include_patterns", [])
-        exclude_patterns = self.configuration.get("url_exclude_patterns", [])
-
-        if include_patterns or exclude_patterns:
-            filtered_urls = []
-            for url in urls:
-                include_match = True
-                exclude_match = False
-
-                # Check include patterns
-                if include_patterns:
-                    include_match = any(
-                        fnmatch.fnmatch(url, pattern) for pattern in include_patterns
-                    )
-
-                # Check exclude patterns
-                if exclude_patterns:
-                    exclude_match = any(
-                        fnmatch.fnmatch(url, pattern) for pattern in exclude_patterns
-                    )
-
-                # Include URL if it matches include patterns and doesn't match exclude patterns
-                if include_match and not exclude_match:
-                    filtered_urls.append(url)
-                    self._logger.debug(
-                        f"Sitemap URL '{url}' included (include: {include_match}, exclude: {exclude_match})"
-                    )
-                else:
-                    self._logger.debug(
-                        f"Sitemap URL '{url}' excluded (include: {include_match}, exclude: {exclude_match})"
-                    )
-
-            patterns_info = []
-            if include_patterns:
-                patterns_info.append(f"include: {include_patterns}")
-            if exclude_patterns:
-                patterns_info.append(f"exclude: {exclude_patterns}")
-
-            self._logger.info(
-                f"Sitemap filtering: {len(filtered_urls)}/{len(urls)} URLs match patterns ({', '.join(patterns_info)})"
-            )
-            return filtered_urls
-
+        self._logger.info(f"Discovered {len(urls)} URLs from sitemap {sitemap_url}")
         return urls
 
-    def _create_crawler_config(self) -> CrawlerRunConfig:
-        """Create CrawlerRunConfig with proper filtering using BFSDeepCrawlStrategy"""
-        # Collect start URLs
-        start_urls = self.configuration.get("start_urls", [])
-        start_urls = [url.strip() for url in start_urls if url and url.strip()]
+    async def _discover_sitemap_urls(self) -> List[str]:
+        """Discover URLs from sitemaps using direct HTTP requests"""
+        discovered_urls = []
 
-        # Store sitemap URLs for later processing in get_docs method
-        self._sitemap_urls = self.configuration.get("sitemap_urls", [])
-        self._sitemap_urls = [
-            url.strip() for url in self._sitemap_urls if url and url.strip()
-        ]
-
-        max_depth = self.configuration.get("max_crawl_depth", 2)
-        filter_chain = self._create_filter_chain()
-
-        # Create deep crawl strategy with filtering
-        deep_crawl_strategy = BFSDeepCrawlStrategy(
-            max_depth=max_depth,
-            include_external=False,
-            filter_chain=filter_chain,
-            max_pages=10000,
-        )
-
-        # Store start URLs for manual iteration
-        self._start_urls = start_urls
-
-        config = CrawlerRunConfig(
-            cache_mode=CacheMode.BYPASS,
-            deep_crawl_strategy=deep_crawl_strategy,
-            stream=True,
-            verbose=True,
-            delay_before_return_html=0.1,
-            check_robots_txt=True,
-        )
-
-        self._logger.info(
-            f"Created CrawlerRunConfig with {len(start_urls)} start URLs and {len(self._sitemap_urls)} sitemaps"
-        )
-        return config
-
-    def _extract_content(self, result) -> str:
-        """Extract content from crawl4ai result using built-in markdown"""
-        extract_full = self.configuration.get("extract_full_content", True)
-
-        if not extract_full:
-            return ""
-
-        if hasattr(result, "markdown") and result.markdown:
-            return result.markdown.fit_markdown or result.markdown.raw_markdown or ""
-
-        return ""
-
-    def _extract_title(self, result, url: str, is_binary: bool) -> str:
-        """Extract title from result"""
-        if (
-            hasattr(result, "metadata")
-            and result.metadata
-            and isinstance(result.metadata, dict)
-        ):
-            title = result.metadata.get("title", "")
-            if title:
-                return title
-
-        if is_binary:
+        for sitemap_url in self.sitemap_urls:
             try:
-                filename = urlparse(url).path.split("/")[-1]
-                return filename or f"Binary Document ({url.split('.')[-1].upper()})"
-            except:
-                return "Binary Document"
+                self._logger.info(f"Processing sitemap: {sitemap_url}")
+                urls = await self._parse_sitemap_xml(sitemap_url)
+                discovered_urls.extend(urls)
 
-        return ""
+            except Exception as e:
+                self._logger.warning(f"Failed to process sitemap {sitemap_url}: {e}")
 
-    def _process_crawl_result(self, result, crawled_count):
-        """Process a single crawl result and return a document dict"""
-        if not result.success:
-            self._logger.warning(
-                f"Failed to crawl {result.url}: {getattr(result, 'error_message', 'Unknown error')}"
-            )
-            return None
-
-        is_binary = self._is_binary_file(result.url)
-        content = self._extract_content(result)
-        title = self._extract_title(result, result.url, is_binary)
-
-        if is_binary:
-            self._logger.info(
-                f"Extracted {len(content)} characters from binary file: {result.url}"
-            )
-
-        doc = {
-            "_id": hash_id(result.url),
-            "url": result.url,
-            "title": title,
-            "content": content,
-            "depth": getattr(result, "depth", 0),
-            "_timestamp": datetime.now(timezone.utc).isoformat(),
-            "size": len(content),
-            "status_code": result.status_code,
-        }
-
-        self._logger.debug(
-            f"Successfully crawled {result.url}: title='{title}', content_size={len(content)}, is_binary={is_binary}"
-        )
-
-        return doc
+        return discovered_urls
 
     async def get_docs(self, filtering=None):
         """Main method to crawl and yield documents using crawl4ai's built-in filtering"""
-        self._logger.info("Starting Crawl4AI web crawling with built-in filtering...")
+        self._logger.info(f"Starting crawl with {len(self.start_urls)} start URLs")
 
-        allowed_domains = self.allowed_domains_set
-        self._logger.info(
-            f"Allowed domains: {allowed_domains if allowed_domains else 'All domains from seed URLs'}"
+        # Create filter chain for domain restrictions and URL patterns
+        filters = []
+
+        if self.allowed_domains:
+            filters.append(DomainFilter(allowed_domains=self.allowed_domains))
+
+        if self.url_include_patterns:
+            include_filter = URLPatternFilter(patterns=self.url_include_patterns)
+            filters.append(include_filter)
+
+        if self.url_exclude_patterns:
+            exclude_filter = URLPatternFilter(
+                patterns=self.url_exclude_patterns, reverse=True
+            )
+            filters.append(exclude_filter)
+
+        filter_chain = FilterChain(filters) if filters else None
+
+        # Configure crawl strategy
+        crawl_strategy = BFSDeepCrawlStrategy(
+            max_depth=self.max_crawl_depth,
+            include_external=False,  # Keep within allowed domains
+            filter_chain=filter_chain,
         )
 
-        extract_binary = self.configuration.get("extract_binary_content", False)
-        self._logger.info(
-            f"Binary content extraction: {'Enabled' if extract_binary else 'Disabled'}"
-        )
-        if extract_binary:
-            self._logger.info(f"Binary file extensions: {self.binary_extensions_set}")
-
-        max_depth = self.configuration.get("max_crawl_depth", 2)
-        self._logger.info(f"Max crawl depth: {max_depth}")
-
-        browser_config = BrowserConfig(
-            headless=False,
-            verbose=False,
+        # Use HTTP-only crawler for speed
+        http_config = HTTPCrawlerConfig(
+            method="GET",
+            headers={"User-Agent": "Crawl4AI-Connector/1.0"},
+            follow_redirects=True,
+            verify_ssl=True,
         )
 
-        crawler_strategy = AsyncHTTPCrawlerStrategy()
-        crawler_config = self._create_crawler_config()
+        crawler_config = CrawlerRunConfig(
+            deep_crawl_strategy=crawl_strategy,
+            stream=True,  # Use streaming for real-time results
+            word_count_threshold=10 if self.extract_full_content else 100,
+            exclude_external_links=True,
+            page_timeout=60000,  # 60 seconds timeout
+        )
 
-        # Collect all URLs to crawl
-        all_start_urls = list(self._start_urls)  # Copy the start URLs
+        try:
+            async with AsyncWebCrawler(
+                crawler_strategy=AsyncHTTPCrawlerStrategy(browser_config=http_config)
+            ) as crawler:
 
-        # Parse sitemaps and add filtered URLs
-        if hasattr(self, "_sitemap_urls") and self._sitemap_urls:
-            for sitemap_url in self._sitemap_urls:
-                try:
-                    sitemap_urls = await self._parse_sitemap(sitemap_url)
+                # Discover additional URLs from sitemaps
+                all_start_urls = list(self.start_urls)
+                if self.sitemap_urls:
+                    sitemap_urls = await self._discover_sitemap_urls()
                     all_start_urls.extend(sitemap_urls)
-                    self._logger.info(
-                        f"Added {len(sitemap_urls)} filtered URLs from sitemap: {sitemap_url}"
-                    )
-                except Exception as e:
-                    self._logger.error(f"Error processing sitemap {sitemap_url}: {e}")
+                    self._logger.info(f"Added {len(sitemap_urls)} URLs from sitemaps")
 
-        # Validate that we have start URLs
-        if not all_start_urls:
-            self._logger.error("No valid start URLs found after processing sitemaps")
-            return
+                # Process each start URL
+                processed_urls = set()
 
-        crawled_count = 0
-
-        async with AsyncWebCrawler(
-            config=browser_config, crawler_strategy=crawler_strategy
-        ) as crawler:
-            try:
-                # Crawl each start URL individually with deep crawling strategy
-                for url in all_start_urls:
-                    try:
-                        crawled_count += 1
-                        self._logger.debug(f"Crawling URL {crawled_count}: {url}")
-
-                        # BFSDeepCrawlStrategy will handle filtering of discovered URLs automatically
-                        result = await crawler.arun(url=url, config=crawler_config)
-
-                        doc = self._process_crawl_result(result, crawled_count)
-                        if doc:
-                            yield doc, None
-
-                    except Exception as e:
-                        self._logger.error(f"Error crawling {url}: {e}")
+                for start_url in all_start_urls:
+                    normalized_url = self._normalize_url(start_url)
+                    if normalized_url in processed_urls:
                         continue
 
-            except Exception as e:
-                self._logger.error(f"Error during crawling: {e}")
-                raise
+                    processed_urls.add(normalized_url)
 
-        self._logger.info(f"Crawling completed. Processed {crawled_count} URLs")
+                    try:
+                        self._logger.info(f"Crawling: {normalized_url}")
+
+                        # Handle binary files differently
+                        if self._is_binary_file(normalized_url):
+                            # For binary files, just create a basic document
+                            doc = {
+                                "_id": hash_id(normalized_url),
+                                "url": normalized_url,
+                                "title": normalized_url.split("/")[-1],
+                                "content": f"Binary file: {normalized_url}",
+                                "depth": 0,
+                                "_timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                            yield doc, None
+                            continue
+
+                        # Use streaming crawl for regular content
+                        async for result in await crawler.arun(
+                            url=normalized_url, config=crawler_config
+                        ):
+                            if result.success:
+                                # Check if this URL should be included based on our exclude patterns
+                                if not self._should_include_url(result.url):
+                                    self._logger.debug(
+                                        f"Skipping excluded URL: {result.url}"
+                                    )
+                                    continue
+
+                                # Create document from crawl result
+                                content = (
+                                    result.markdown
+                                    if self.extract_full_content
+                                    else result.cleaned_html
+                                )
+                                title = result.metadata.get("title", "")
+                                if not title:
+                                    # Extract title from URL if not available
+                                    title = result.url.split("/")[-1] or result.url
+
+                                depth = result.metadata.get("depth", 0)
+
+                                doc = {
+                                    "_id": hash_id(result.url),
+                                    "url": result.url,
+                                    "title": title,
+                                    "content": content,
+                                    "depth": depth,
+                                    "_timestamp": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                }
+
+                                # Add metadata if available
+                                if hasattr(result, "links") and result.links:
+                                    doc["links_count"] = len(result.links)
+
+                                if hasattr(result, "media") and result.media:
+                                    doc["media_count"] = len(
+                                        result.media.get("images", [])
+                                    )
+
+                                yield doc, None
+
+                            else:
+                                self._logger.warning(
+                                    f"Failed to crawl {result.url}: {result.error_message}"
+                                )
+
+                    except Exception as e:
+                        self._logger.error(f"Error crawling {normalized_url}: {e}")
+                        continue
+
+        except Exception as e:
+            self._logger.error(f"Crawler initialization failed: {e}")
+            raise
